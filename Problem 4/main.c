@@ -11,7 +11,8 @@
  * when a button on P0.9 was pressed.
  *
  * During presentation of project to the professor, the button functionality
- * did not work correctly.
+ * did not work correctly. Currently however the hardware interrupt button
+ * does in fact work now.
  */
 
 /*
