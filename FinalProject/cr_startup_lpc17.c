@@ -172,8 +172,8 @@ void (* const g_pfnVectors[])(void) = {
 	xPortSysTickHandler,                    // The SysTick handler
 
 	// Chip Level - LPC17
-	vSoftwareInterruptHandler,				// 16, 0x40 - WDT
-	TIMER0_IRQHandler,						// 17, 0x44 - TIMER0
+	WDT_IRQHandler,				            // 16, 0x40 - WDT
+	vSoftwareInterruptHandler,			    // 17, 0x44 - TIMER0
 	TIMER1_IRQHandler,						// 18, 0x48 - TIMER1
 	TIMER2_IRQHandler,						// 19, 0x4c - TIMER2
 	TIMER3_IRQHandler,						// 20, 0x50 - TIMER3

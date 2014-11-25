@@ -112,6 +112,7 @@ volatile int g_Freq;     // the last frequency measured
 // Number of samples that have a stable value for debouncing the switch.
 uint16_t g_ui16StableCount = 0;
 TimerHandle_t g_xDebounceTimer;
+TimerHandle_t g_xLEDTimer;
 
 // Store RTC value in seconds
 long lSeconds = 0;
@@ -149,9 +150,9 @@ int main( void ) {
 	//
 	// Create a timer that will interrupt and toggle the LED
 	//
-	TimerHandle_t xLEDTimer;
+	TimerHandle_t g_xLEDTimer;
 	long y = 2;
-	xLEDTimer = xTimerCreate("LED Timer", (200 / portTICK_PERIOD_MS), pdTRUE, (void *) y,	vLEDTimerCallback);
+	g_xLEDTimer = xTimerCreate("LED Timer", (200 / portTICK_PERIOD_MS), pdTRUE, (void *) y,	vLEDTimerCallback);
 
 	//
 	// Create a 1 ms timer that will interrupt for switch debouncing
@@ -210,7 +211,7 @@ int main( void ) {
 		/*
 		 * Start the RTC timer
 		 */
-		xTimerStart(xLEDTimer, portMAX_DELAY);
+		xTimerStart(g_xLEDTimer, portMAX_DELAY);
 
 		/* Start the scheduler so the created tasks start executing. */
 		vTaskStartScheduler();
@@ -271,7 +272,7 @@ static void vFreqHandlerTask( void *pvParameters )
 
 					g_Freq = ticks; // send this up so button can get it
 					//printf("%s %d %s\n", "The frequency is ", freq, "Hz");
-
+					xTimerChangePeriod(g_xLEDTimer, 1000 * portTICK_PERIOD_MS / (ticks * 4), 0); //Should theoretically work
 					// Give back mutex for g_Freq global variable
 					xSemaphoreGive( xFrequencyMutex );
 
@@ -303,7 +304,7 @@ static void vPeriodicTask( void *pvParameters )
 	for( ;; )
 	{		/* This task is just used to 'simulate' an interrupt.  This is done by
         periodically generating a software interrupt. */
-		vTaskDelay( 1 / portTICK_RATE_MS ); // 2ms delay, helps clean up the noise
+		vTaskDelay( 1 / portTICK_RATE_MS ); // 1ms delay, helps clean up the noise
 
 		/* Generate the interrupt, printing a message both before hand and
         afterwards so the sequence of execution is evident from the output. */
