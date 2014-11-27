@@ -1,5 +1,4 @@
 /******************************************Code documentation**************************************
-
     FreeRTOS V8.0.1 - Copyright (C) 2014 Real Time Engineers Ltd.
      This file is part of the FreeRTOS distribution.
     FreeRTOS is free software; you can redistribute it and/or modify it under
@@ -16,9 +15,7 @@
     can be viewed here: http://www.freertos.org/a00114.html and also obtained
     by writing to Richard Barry, contact details for whom are available on the
     FreeRTOS WEB site.
-
     1 tab == 4 spaces!
-
     http://www.FreeRTOS.org - Documentation, latest information, license and
     contact details.
     http://www.SafeRTOS.com - A version that is certified for use in safety
@@ -69,6 +66,7 @@ static void vFreqHandlerTask( void *pvParameters );
 static void vPeriodicTask( void *pvParameters );
 static void vPrintFreqCurrentTask( void *pvParameters );
 static void vPrintFreqChangeTask( void *pvParameters );
+static void vChangeLEDTask( void *pvParameters );
 
 /* Enable the software interrupt and set its priority. */
 static void prvSetupSoftwareInterrupt();
@@ -79,9 +77,6 @@ void vSoftwareInterruptHandler( void );
 
 /* Timer callback function for real time clock */
 void vRTCTimerCallback( TimerHandle_t xTimer );
-
-/* Timer callback function for LED toggle */
-void vLEDTimerCallback( TimerHandle_t xTimer );
 
 /* Timer callback function for switch debouncing */
 void vDebounceTimerCallback( TimerHandle_t xTimer );
@@ -112,7 +107,6 @@ volatile int g_Freq;     // the last frequency measured
 // Number of samples that have a stable value for debouncing the switch.
 uint16_t g_ui16StableCount = 0;
 TimerHandle_t g_xDebounceTimer;
-TimerHandle_t g_xLEDTimer;
 
 // Store RTC value in seconds
 long lSeconds = 0;
@@ -146,13 +140,6 @@ int main( void ) {
 	TimerHandle_t xRTCTimer;
 	long x = 1;
 	xRTCTimer = xTimerCreate("Print Timer", (1000 / portTICK_PERIOD_MS), pdTRUE, (void *) x,	vRTCTimerCallback);
-
-	//
-	// Create a timer that will interrupt and toggle the LED
-	//
-	TimerHandle_t g_xLEDTimer;
-	long y = 2;
-	g_xLEDTimer = xTimerCreate("LED Timer", (200 / portTICK_PERIOD_MS), pdTRUE, (void *) y,	vLEDTimerCallback);
 
 	//
 	// Create a 1 ms timer that will interrupt for switch debouncing
@@ -203,15 +190,14 @@ int main( void ) {
         get preempted each time the handler task exits the Blocked state. */
 		xTaskCreate( vPrintFreqChangeTask, "Print Frequency Change", 240, NULL, 1, NULL );
 
-		/*
-		 * Start the RTC timer
+		/* Create the task that will flicker the LED on and off.
 		 */
-		xTimerStart(xRTCTimer, portMAX_DELAY);
+		xTaskCreate( vChangeLEDTask,    "Change LED State", 240, NULL, 4, NULL );
 
 		/*
 		 * Start the RTC timer
 		 */
-		xTimerStart(g_xLEDTimer, portMAX_DELAY);
+		xTimerStart(xRTCTimer, portMAX_DELAY);
 
 		/* Start the scheduler so the created tasks start executing. */
 		vTaskStartScheduler();
@@ -226,6 +212,37 @@ int main( void ) {
 /*------------------------------------------------------------------------------------------------------------------------*/
 
 
+static void vChangeLEDTask( void *pvParameters )
+{
+	int freq = 1;
+
+	for( ; ;) {
+		// Toggle GPIO0 pin 22 status
+		if (LPC_GPIO0->FIOPIN & (1 << 22))
+		{
+			LPC_GPIO0->FIOCLR = (1 << 22);
+		}
+		else
+		{
+			LPC_GPIO0->FIOSET = (1 << 22);
+		}
+		xSemaphoreTake( xFrequencyMutex, portMAX_DELAY );
+
+		freq = g_Freq; // send this up so button can get it
+
+		// Give back mutex for g_Freq global variable
+		xSemaphoreGive( xFrequencyMutex );
+
+		if (freq > 200) {
+			freq = 200;
+		}
+		vTaskDelay(((((200 - freq) * 480) / 150) + 20) / portTICK_PERIOD_MS);
+	}
+
+
+}
+/*------------------------------------------------------------------------------------------------------------------------*/
+
 static void vFreqHandlerTask( void *pvParameters )
 {
 	int current_base_freq = 0;
@@ -233,7 +250,6 @@ static void vFreqHandlerTask( void *pvParameters )
 	//int tock;    // will compare this with the volatile tick to see how much time passed // NOT USED???
 
 	/* As per most tasks, this task is implemented within an infinite loop.
-
     Take the semaphore once to start with so the semaphore is empty before the
     infinite loop is entered.  The semaphore was created before the scheduler
     was started so before this task ran for the first time.*/
@@ -272,7 +288,7 @@ static void vFreqHandlerTask( void *pvParameters )
 
 					g_Freq = ticks; // send this up so button can get it
 					//printf("%s %d %s\n", "The frequency is ", freq, "Hz");
-					xTimerChangePeriod(g_xLEDTimer, 1000 * portTICK_PERIOD_MS / (ticks * 4), 0); //Should theoretically work
+
 					// Give back mutex for g_Freq global variable
 					xSemaphoreGive( xFrequencyMutex );
 
@@ -330,6 +346,9 @@ static void vPrintFreqChangeTask( void *pvParameters )
 
 		// Take mutex for g_Freq global variable
 		xSemaphoreTake( xFrequencyMutex, portMAX_DELAY );
+		//taskENTER_CRITICAL();
+		//xTimerChangePeriod(g_xLEDTimer, 500 / portTICK_PERIOD_MS, portMAX_DELAY);
+		//taskEXIT_CRITICAL();
 
 		printf("%s %d %s\n", "Frequency change: ", g_Freq, "Hz");
 
@@ -404,7 +423,6 @@ void EINT3_IRQHandler(void)
     task then xHigherPriorityTaskWoken will have been set to pdTRUE and
     portEND_SWITCHING_ISR() will force a context switch to the newly unblocked
     higher priority task.
-
     NOTE: The syntax for forcing a context switch within an ISR varies between
     FreeRTOS ports.  The portEND_SWITCHING_ISR() macro is provided as part of
     the Cortex-M3 port layer for this purpose.  taskYIELD() must never be called
@@ -494,22 +512,6 @@ void vDebounceTimerCallback( TimerHandle_t xTimer )
 }
 
 /*------------------------------------------------------------------------------------------------------------------------*/
-
-//
-// Function for LED Timer Callback
-//
-void vLEDTimerCallback( TimerHandle_t xTimer )
-{
-	// Toggle GPIO0 pin 22 status
-	if (LPC_GPIO0->FIOPIN & (1 << 22))
-	{
-		LPC_GPIO0->FIOCLR = (1 << 22);
-	}
-	else
-	{
-		LPC_GPIO0->FIOSET = (1 << 22);
-	}
-}
 
 //
 // Function for RTC Timer Callback
