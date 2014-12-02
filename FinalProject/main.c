@@ -124,8 +124,8 @@ int main( void ) {
 	LPC_ADC->ADCR = 1 | (2 << 8) | (1 << 14) | (1 << 21);
 
 	// set up button interrupt
-	LPC_PINCON->PINSEL0 |= (0x00 << 19);     // set 19:18 00
-	LPC_PINCON->PINMODE0 = (0x00 << 19);     // set 19:18 00
+	LPC_PINCON->PINSEL0  &= ~(0x03 << 18);     // set 19:18 00
+	LPC_PINCON->PINMODE0 &= ~(0x03 << 18);     // set 19:18 00
 	LPC_GPIOINT->IO0IntEnR |= (1 << 9);      // enable rising edge interrupt on pin 0.9
 	NVIC_SetPriority(EINT3_IRQn, 0x08);
 	NVIC_EnableIRQ(EINT3_IRQn);
