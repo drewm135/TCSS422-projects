@@ -1,3 +1,22 @@
+/*
+ * Original FreeRTOS "Example12" project modified by:
+ *
+ * Thinh Le, Keith Lueneburg, Drew (Seth) May, Joshua Udd
+ * TCSS 422
+ * Autumn 2014
+ * University of Washington Tacoma
+ *
+ * Original example was modified to include sampling from the ADC
+ * and calculating the frequency of a sin wave which was then printed
+ * when a button on P0.9 was pressed.
+ *
+ * Added functionality includes filtered ADC readings for more accurate
+ * results, a automatic printout when the frequency changes by more than 10Hz,
+ * Switch debouncing, onboard LED blinking functionality (proportional to the
+ * frequency), real time clock output, and watchdog timer to reset the system
+ * if the button has not been pressed for a set amount of time.
+ */
+
 /******************************************Code documentation**************************************
     FreeRTOS V8.0.1 - Copyright (C) 2014 Real Time Engineers Ltd.
      This file is part of the FreeRTOS distribution.
@@ -81,6 +100,12 @@ void vRTCTimerCallback( TimerHandle_t xTimer );
 /* Timer callback function for switch debouncing */
 void vDebounceTimerCallback( TimerHandle_t xTimer );
 
+/* Function for Watchdog timer initialization */
+void Watchdog_Init(uint32_t parameter);
+
+/* Function for enabling the Watchdog */
+static void Watchdog_Feed();
+
 
 /*------------------------------------------------------------------------------------------------------------------------*/
 
@@ -99,10 +124,10 @@ xSemaphoreHandle xRTCMutex;
 /*-------------------------------------------------------------------------------------------------------------------------*/
 
 volatile int last;     // value of last reading, for peak detection
-volatile int count;     // how many readings were taken
-volatile int up;     // direction - up = 1 down = 0
-volatile int ticks;     // number of peaks observed in 100 cycles
-volatile int g_Freq;     // the last frequency measured
+volatile int count;    // how many readings were taken
+volatile int up;       // direction - up = 1 down = 0
+volatile int ticks;    // number of peaks observed in 100 cycles
+volatile int g_Freq;   // the last frequency measured
 
 // Number of samples that have a stable value for debouncing the switch.
 uint16_t g_ui16StableCount = 0;
@@ -113,6 +138,8 @@ long lSeconds = 0;
 // using last vs current comparison; current is adc_val
 int adc_val; // current reading
 
+// Watchdog  timeout value
+uint32_t timeOut = 600000; // 600000 approximately 600 ticks.
 
 /*Main function which include button interrupt and other function calls */
 int main( void ) {
@@ -121,14 +148,14 @@ int main( void ) {
 	LPC_SC->PCONP |= 1 << 12; // set PCADC bit
 	LPC_PINCON->PINSEL1 = (LPC_PINCON->PINSEL1 & ~(0X3 << 14)) | (0X1 << 14); // set 15:14 to 01
 	LPC_PINCON->PINMODE1 = (LPC_PINCON->PINMODE1 & ~(0X3 << 14)) | (0X1 << 15); // set 15:14 to 10
-	LPC_ADC->ADCR = 1 | (2 << 8) | (1 << 14) | (1 << 21);
+	LPC_ADC->ADCR = 1 | (2 << 8) | (1 << 14) | (1 << 21);  //Sample from ADC0, divide clock by 64, and enable the A/D converter
 
 	// set up button interrupt
 	LPC_PINCON->PINSEL0  &= ~(0x03 << 18);     // set 19:18 00
 	LPC_PINCON->PINMODE0 &= ~(0x03 << 18);     // set 19:18 00
-	LPC_GPIOINT->IO0IntEnR |= (1 << 9);      // enable rising edge interrupt on pin 0.9
-	NVIC_SetPriority(EINT3_IRQn, 0x08);
-	NVIC_EnableIRQ(EINT3_IRQn);
+	LPC_GPIOINT->IO0IntEnR |= (1 << 9);        // enable rising edge interrupt on pin 0.9
+	NVIC_SetPriority(EINT3_IRQn, 0x08);        //Set priority of button interrupt to 8
+	NVIC_EnableIRQ(EINT3_IRQn);                //Enable the interrupt
 
 	// Set GPIO0 pin 22 direction to output
 	// This pin is connected to the development board LED2
@@ -199,6 +226,11 @@ int main( void ) {
 		 */
 		xTimerStart(xRTCTimer, portMAX_DELAY);
 
+		/*
+		 * Start the Watchdog timer
+		 */
+		Watchdog_Init(timeOut);
+
 		/* Start the scheduler so the created tasks start executing. */
 		vTaskStartScheduler();
 	}
@@ -211,6 +243,42 @@ int main( void ) {
 }
 /*------------------------------------------------------------------------------------------------------------------------*/
 
+/*
+ * Initiate Watchdog timer
+ * @param timeOut:  the constant time-out value before reseting the Watchdog timer
+ * Note: if you fail to run the debug, try to terminate the old debugging section and change to a new USB port. Should be working fine
+ */
+void Watchdog_Init(uint32_t timeOut){
+
+	if((LPC_WDT->WDMOD & 0x03) != 0x03){  	// If watchdog timer is not enabled yet (bits 1:0 in Watchdog mode register)
+		LPC_SC->PCLKSEL0 = ~(0x03);  		//Reset the Peripheral Clock Selection register 0 for Watchdog timer (bits 1:0)
+
+		// Selects the Internal RC oscillator (irc_clk) as the Watchdog clock source (default) bits 1:0
+		// WDT locking bit 31
+		LPC_WDT->WDCLKSEL = 0x80000000; 	/* Lock in the RC clock source */
+
+		//Set the Watchdog timer constant reload value in WDTC register.
+		LPC_WDT->WDTC = timeOut*256*4;
+		// Set up Watchdog operating mode in WDMOD register (bits 1:0)
+		LPC_WDT->WDMOD = 0x03;
+
+	}else{									// If Watchdog timer is already enabled
+		LPC_WDT->WDTC = timeOut*256*4;		// Then we just need to reload the constant time-out value
+	}
+
+	// Enable Watchdog by writting 0xAA followed by 0x55 to WDFEED register
+	Watchdog_Feed(); // feed the watchdog
+}
+/*------------------------------------------------------------------------------------------------------------------------*/
+
+/*
+ * Function for enabling the Watchdog (feeding the dog :))
+ */
+static void Watchdog_Feed(){
+	LPC_WDT->WDFEED = 0xAA;
+	LPC_WDT->WDFEED = 0x55;
+}
+/*------------------------------------------------------------------------------------------------------------------------*/
 
 static void vChangeLEDTask( void *pvParameters )
 {
@@ -226,17 +294,17 @@ static void vChangeLEDTask( void *pvParameters )
 		{
 			LPC_GPIO0->FIOSET = (1 << 22);
 		}
-		xSemaphoreTake( xFrequencyMutex, portMAX_DELAY );
+		xSemaphoreTake( xFrequencyMutex, portMAX_DELAY ); //Take frequency mutex to access global variable
 
 		freq = g_Freq; // send this up so button can get it
 
 		// Give back mutex for g_Freq global variable
 		xSemaphoreGive( xFrequencyMutex );
 
-		if (freq > 200) {
+		if (freq > 200) { //Create a upper bar for frequency
 			freq = 200;
 		}
-		vTaskDelay(((((200 - freq) * 480) / 150) + 20) / portTICK_PERIOD_MS);
+		vTaskDelay(((((200 - freq) * 480) / 150) + 20) / portTICK_PERIOD_MS); //Delay for appropriate period of LED blinking
 	}
 
 
@@ -247,7 +315,6 @@ static void vFreqHandlerTask( void *pvParameters )
 {
 	int current_base_freq = 0;
 	int filtered_adc = 2048; // filtered value of ADC reading
-	//int tock;    // will compare this with the volatile tick to see how much time passed // NOT USED???
 
 	/* As per most tasks, this task is implemented within an infinite loop.
     Take the semaphore once to start with so the semaphore is empty before the
@@ -281,13 +348,11 @@ static void vFreqHandlerTask( void *pvParameters )
 				up = 0; // note we are going down now, no more peaks until we go up again
 				if(count >= 1000) { // if we counted for four seconds
 					count = 0; // reset count
-					//printf("%d %s\n", ticks/4, "Hz"); // output to console, disabled after button setup
 
 					// Take mutex for g_Freq global variable
 					xSemaphoreTake( xFrequencyMutex, portMAX_DELAY );
 
 					g_Freq = ticks; // send this up so button can get it
-					//printf("%s %d %s\n", "The frequency is ", freq, "Hz");
 
 					// Give back mutex for g_Freq global variable
 					xSemaphoreGive( xFrequencyMutex );
@@ -346,11 +411,8 @@ static void vPrintFreqChangeTask( void *pvParameters )
 
 		// Take mutex for g_Freq global variable
 		xSemaphoreTake( xFrequencyMutex, portMAX_DELAY );
-		//taskENTER_CRITICAL();
-		//xTimerChangePeriod(g_xLEDTimer, 500 / portTICK_PERIOD_MS, portMAX_DELAY);
-		//taskEXIT_CRITICAL();
 
-		printf("%s %d %s\n", "Frequency change: ", g_Freq, "Hz");
+		printf("%s %d %s\n", "Frequency change: ", g_Freq, "Hz"); //Print the frequency change
 
 		// Give back mutex for g_Freq global variable
 		xSemaphoreGive( xFrequencyMutex );
@@ -374,7 +436,7 @@ static void vPrintFreqCurrentTask( void *pvParameters )
 		// Take mutex for g_Freq global variable
 		xSemaphoreTake( xFrequencyMutex, portMAX_DELAY );
 
-		printf("%s %d %s\n", "Current frequency: ", g_Freq, "Hz");
+		printf("%s %d %s\n", "Current frequency: ", g_Freq, "Hz"); //Print the current frequency
 
 		// Give back mutex for g_Freq global variable
 		xSemaphoreGive( xFrequencyMutex );
@@ -418,6 +480,9 @@ void EINT3_IRQHandler(void)
 	// Start the debounce timer
 	xTimerStartFromISR(g_xDebounceTimer, NULL);
 
+	// Press the button to feed the Watchdog again before timeout. Otherwise, the system will be reset.
+	Watchdog_Feed();
+
 	/* Giving the semaphore may have unblocked a task - if it did and the
     unblocked task has a priority equal to or above the currently executing
     task then xHigherPriorityTaskWoken will have been set to pdTRUE and
@@ -435,8 +500,6 @@ void vSoftwareInterruptHandler( void )
 	portBASE_TYPE xHigherPriorityTaskWokenA = pdFALSE;
 	portBASE_TYPE xHigherPriorityTaskWokenB = pdFALSE;
 	portBASE_TYPE xHigherPriorityTaskWokenC = pdFALSE;
-
-	//int count = 0; // made this a volatile so it actually counts
 
 	LPC_ADC->ADCR |= 1 << 24; // start conversion
 	while((LPC_ADC->ADDR0 & (1 << 31)) == 0); // wait for conversion to finish
